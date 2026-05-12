@@ -40,7 +40,6 @@ Ohne venv (nutzt systemweites Python):
 ```bash
 python -m streamlit run app.py
 ```
-```
 
 Die App offnet sich im Browser unter `http://localhost:8501`.
 
@@ -62,7 +61,7 @@ Im Formular "Neue Anlage" die Parameter eintragen:
 | Wechselrichter-Limit | 0 = kein Limit, z.B. 800 fur Balkonkraftwerk |
 | Farbe | Diagramm-Farbe der Anlage |
 
-Gespeicherte Anlagen konnen per Klick auf \(\u270f\) bearbeitet, \(\uD83D\uDCCB\) dupliziert oder \(\uD83D\uDDD1\) geloscht werden. Die Daten bleiben in `pv_plants.json` erhalten.
+Gespeicherte Anlagen konnen per Klick auf ✏️ bearbeitet, 📋 dupliziert oder 🗑️ geloscht werden. Die Daten bleiben in `pv_plants.json` erhalten.
 
 ### 2. Simulationsparameter (Sidebar)
 
@@ -95,7 +94,7 @@ Gespeicherte Anlagen konnen per Klick auf \(\u270f\) bearbeitet, \(\uD83D\uDCCB\
 5. **AC-Wandlung** via PVWatts-Wechselrichter-Modell
 6. **Systemverluste** (konfigurierbar, nach AC-Wandlung)
 7. **Clipping** auf Wechselrichter-Limit
-8. **Wochen-Normalisierung**: Durchschnittlicher Tagesertrag \(\times\) 7 (52 standardisierte Wochen)
+8. **Wochen-Normalisierung**: Durchschnittlicher Tagesertrag × 7 (52 standardisierte Wochen)
 
 ---
 
