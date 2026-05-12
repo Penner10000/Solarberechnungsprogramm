@@ -31,8 +31,15 @@ pip install -r requirements.txt
 
 ### Starten
 
+Mit aktivierter venv:
 ```bash
 streamlit run app.py
+```
+
+Ohne venv (nutzt systemweites Python):
+```bash
+python -m streamlit run app.py
+```
 ```
 
 Die App offnet sich im Browser unter `http://localhost:8501`.
