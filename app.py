@@ -129,7 +129,10 @@ def simulate_plant(plant_identifier, peak_power_wp, azimuth, tilt, latitude, lon
     weekly = weekly.reindex(range(1, int(df["week"].max()) + 1), fill_value=0.0)
     weekly.index.name = None
 
-    return weekly, df, yearly_total_wh, clipped_wh
+    monthly = daily.resample("ME").sum()
+    monthly.index = monthly.index.strftime("%b")
+
+    return weekly, monthly, df, yearly_total_wh, clipped_wh
 
 
 # ===================== SIDEBAR =====================
@@ -398,13 +401,14 @@ st.divider()
 
 with st.spinner("Berechne PV-Ertr\u00e4ge ..."):
     results = {}
+    monthly_results = {}
     detail_dfs = {}
     yearly_totals = {}
     clipping_losses = {}
     sim_errors = []
     for plant in selected_plants:
         try:
-            weekly, detail, yearly, clipped = simulate_plant(
+            weekly, monthly, detail, yearly, clipped = simulate_plant(
                 plant["id"],
                 plant["peak_power_wp"],
                 plant["azimuth"],
@@ -420,6 +424,7 @@ with st.spinner("Berechne PV-Ertr\u00e4ge ..."):
                 eta_inv,
             )
             results[plant["id"]] = weekly
+            monthly_results[plant["id"]] = monthly
             detail_dfs[plant["id"]] = detail
             yearly_totals[plant["id"]] = yearly
             clipping_losses[plant["id"]] = clipped
@@ -442,28 +447,48 @@ id_to_name = {p["id"]: p["name"] for p in selected_plants if p["id"] in results}
 id_to_plant = {p["id"]: p for p in selected_plants if p["id"] in results}
 weekly_df = weekly_df.rename(columns=id_to_name)
 
+monthly_df = pd.DataFrame(monthly_results)
+monthly_df = monthly_df.rename(columns=id_to_name)
+
 st.markdown("### Diagramm-Einstellungen")
-col_ctl1, col_ctl2, col_ctl3 = st.columns(3)
+col_ctl1, col_ctl2, col_ctl3, col_ctl4 = st.columns(4)
 
 with col_ctl1:
+    x_resolution = st.radio(
+        "X-Achse",
+        options=["KW", "Monate"],
+        horizontal=True,
+        help="KW = Kalenderwochen (1–52/53), Monate = Januar–Dezember",
+    )
+with col_ctl2:
     unit_mode = st.toggle(
         "Spezifischer Ertrag (kWh/kWp)",
         value=False,
         help="Wenn aktiviert, wird der Ertrag pro kWp statt absolut angezeigt.",
     )
-with col_ctl2:
+with col_ctl3:
     chart_type = st.radio(
         "Diagramm-Typ",
         options=["Linie", "Balken gruppiert", "Balken gestapelt"],
         horizontal=True,
     )
-with col_ctl3:
+with col_ctl4:
     display_weeks = st.selectbox(
         "Angezeigte Wochen",
         options=["Alle (1\u201352)", "Sommer (14\u201339)", "Winter (40\u201313)"],
     )
 
 display_df = weekly_df.copy()
+is_monthly = x_resolution == "Monate"
+
+if is_monthly:
+    display_df = monthly_df.copy()
+    x_label = "Monat"
+    week_filter_active = False
+else:
+    display_df = weekly_df.copy()
+    x_label = "KW"
+    week_filter_active = True
 
 if unit_mode:
     for plant in selected_plants:
@@ -474,9 +499,9 @@ else:
     display_df = display_df / 1000
     unit_label = "kWh"
 
-if display_weeks == "Sommer (14\u201339)":
+if week_filter_active and display_weeks == "Sommer (14\u201339)":
     display_df = display_df.loc[14:39]
-elif display_weeks == "Winter (40\u201313)":
+elif week_filter_active and display_weeks == "Winter (40\u201313)":
     max_week = display_df.index.max()
     weeks_40_end = list(range(40, max_week + 1))
     weeks_1_13 = list(range(1, 14))
@@ -497,19 +522,21 @@ for plant in selected_plants:
     if name not in display_df.columns:
         continue
 
+    hover_prefix = "Monat" if is_monthly else "KW"
+
     if chart_type == "Linie":
         fig.add_trace(go.Scatter(
             x=display_df.index, y=display_df[name],
             mode="lines+markers", name=name,
             line=dict(color=c) if c else None,
             marker=dict(color=c) if c else None,
-            hovertemplate=f"{name}<br>KW %{{x}}: %{{y:.1f}} {unit_label}<extra></extra>",
+            hovertemplate=f"{name}<br>{hover_prefix} %{{x}}: %{{y:.1f}} {unit_label}<extra></extra>",
         ))
     else:
         fig.add_trace(go.Bar(
             x=display_df.index, y=display_df[name],
             name=name, marker_color=c,
-            hovertemplate=f"{name}<br>KW %{{x}}: %{{y:.1f}} {unit_label}<extra></extra>",
+            hovertemplate=f"{name}<br>{hover_prefix} %{{x}}: %{{y:.1f}} {unit_label}<extra></extra>",
         ))
 
 if chart_type == "Linie":
@@ -521,7 +548,7 @@ else:
 
 fig.update_layout(
     barmode=barmode,
-    xaxis_title="Kalenderwoche",
+    xaxis_title=x_label,
     yaxis_title=f"Ertrag ({unit_label})",
     hovermode="x unified",
     height=500,
@@ -531,7 +558,7 @@ fig.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
 
-if display_weeks == "Winter (40\u201313)":
+if not is_monthly and display_weeks == "Winter (40\u201313)":
     tick_vals = list(display_df.index)
     tick_text = [str(v - offset if v >= offset else v) for v in tick_vals]
     fig.update_xaxes(tickvals=tick_vals, ticktext=tick_text)
