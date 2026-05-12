@@ -1,0 +1,24 @@
+[
+  {
+    "id": "a0d0294d-dbc5-439f-9220-61881e4b75e1",
+    "name": "Frank",
+    "peak_power_wp": 900,
+    "azimuth": 118,
+    "tilt": 45,
+    "latitude": 51.16,
+    "longitude": 10.45,
+    "inverter_limit_w": 800,
+    "color": "#1f39b4"
+  },
+  {
+    "id": "fd5a5734-0d07-4736-8106-2b6a45bcfe64",
+    "name": "Kraftwerk",
+    "peak_power_wp": 1000,
+    "azimuth": 157,
+    "tilt": 90,
+    "latitude": 51.16,
+    "longitude": 10.45,
+    "inverter_limit_w": 800,
+    "color": "#b4241f"
+  }
+]
