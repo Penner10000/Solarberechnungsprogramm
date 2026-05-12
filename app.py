@@ -536,7 +536,7 @@ if display_weeks == "Winter (40\u201313)":
     tick_text = [str(v - offset if v >= offset else v) for v in tick_vals]
     fig.update_xaxes(tickvals=tick_vals, ticktext=tick_text)
 
-st.plotly_chart(fig, use_container_width=True, key="main_chart")
+st.plotly_chart(fig, width="stretch", key="main_chart")
 
 # --- Comparison table ---
 st.markdown("### Vergleichstabelle")
