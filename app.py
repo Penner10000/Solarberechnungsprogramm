@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from pvlib import location, irradiance, pvsystem, temperature, inverter, atmosphere
+import pvlib.iotools
 import uuid
 import json
 import os
@@ -54,28 +55,93 @@ if not st.session_state.loaded:
     st.session_state.loaded = True
 
 
+def fetch_tmy_data(latitude, longitude):
+    try:
+        result = pvlib.iotools.get_pvgis_tmy(latitude, longitude, map_variables=True)
+        if isinstance(result, (tuple, list)) and len(result) >= 2:
+            return result[0]
+        return None
+    except Exception:
+        return None
+
+
+def _map_tmy_to_times(tmy_data, times):
+    tmy_idx = tmy_data.index
+    lookup = {}
+    for ts in tmy_idx:
+        key = (ts.month, ts.day, ts.hour)
+        lookup[key] = ts
+    ghi = np.full(len(times), np.nan)
+    dni = np.full(len(times), np.nan)
+    dhi = np.full(len(times), np.nan)
+    temp = np.full(len(times), np.nan)
+    for i, ts in enumerate(times):
+        t = ts.tz_convert(None) if hasattr(ts, 'tz') else ts
+        key = (t.month, t.day, t.hour)
+        if key in lookup:
+            row = tmy_data.loc[lookup[key]]
+            ghi[i] = row.get("ghi", 0)
+            dni[i] = row.get("dni", 0)
+            dhi[i] = row.get("dhi", 0)
+            temp[i] = row.get("temp_air", np.nan)
+    return ghi, dni, dhi, temp
+
+
 @st.cache_data(show_spinner=False)
-def simulate_plant(plant_identifier, peak_power_wp, azimuth, tilt, latitude, longitude, inverter_limit_w, sim_year, system_loss=0.0, temp_coeff=0.0, albedo=0.2, transposition_model="perez", eta_inv_nom=0.96):
+def simulate_plant(plant_identifier, peak_power_wp, azimuth, tilt, latitude, longitude, inverter_limit_w, sim_year, system_loss=0.0, temp_coeff=0.0, albedo=0.2, transposition_model="perez", eta_inv_nom=0.96, use_tmy=False):
     loc = location.Location(latitude, longitude, tz="UTC")
 
     start = f"{sim_year}-01-01 00:00:00"
     end = f"{sim_year}-12-31 23:00:00"
     times = pd.date_range(start, end, freq="1h", tz="UTC")
 
-    clearsky = loc.get_clearsky(times)
     solpos = loc.get_solarposition(times)
-
     airmass = atmosphere.get_relative_airmass(solpos["apparent_zenith"])
     dni_extra = irradiance.get_extra_radiation(times)
+
+    if use_tmy:
+        tmy_data = fetch_tmy_data(latitude, longitude)
+        if tmy_data is None:
+            tmy_ghi, tmy_dni, tmy_dhi, tmy_temp = None, None, None, None
+            tmy_failed = True
+        else:
+            tmy_ghi, tmy_dni, tmy_dhi, tmy_temp = _map_tmy_to_times(tmy_data, times)
+            tmy_failed = False
+
+        if tmy_failed or np.isnan(tmy_ghi).all():
+            tmy_failed = True
+            clearsky = loc.get_clearsky(times)
+            ghi_use = clearsky["ghi"]
+            dni_use = clearsky["dni"]
+            dhi_use = clearsky["dhi"]
+            temp_air_use = 10 + 10 * np.cos(2 * np.pi * (times.dayofyear - 182) / 365)
+        else:
+            nan_count = np.isnan(tmy_ghi).sum()
+            if nan_count > 0:
+                tmy_ghi = np.nan_to_num(tmy_ghi, 0)
+                tmy_dni = np.nan_to_num(tmy_dni, 0)
+                tmy_dhi = np.nan_to_num(tmy_dhi, 0)
+                tmy_temp = np.nan_to_num(tmy_temp, 10)
+            ghi_use = pd.Series(tmy_ghi, index=times)
+            dni_use = pd.Series(tmy_dni, index=times)
+            dhi_use = pd.Series(tmy_dhi, index=times)
+            temp_air_use = tmy_temp
+    else:
+        tmy_failed = False
+        clearsky = loc.get_clearsky(times)
+        ghi_use = clearsky["ghi"]
+        dni_use = clearsky["dni"]
+        dhi_use = clearsky["dhi"]
+        temp_air_use = 10 + 10 * np.cos(2 * np.pi * (times.dayofyear - 182) / 365)
 
     poa = irradiance.get_total_irradiance(
         surface_tilt=tilt,
         surface_azimuth=azimuth,
         solar_zenith=solpos["apparent_zenith"],
         solar_azimuth=solpos["azimuth"],
-        dni=clearsky["dni"],
-        ghi=clearsky["ghi"],
-        dhi=clearsky["dhi"],
+        dni=dni_use,
+        ghi=ghi_use,
+        dhi=dhi_use,
         dni_extra=dni_extra,
         airmass=airmass,
         albedo=albedo,
@@ -84,13 +150,11 @@ def simulate_plant(plant_identifier, peak_power_wp, azimuth, tilt, latitude, lon
 
     poa_global = poa["poa_global"].clip(lower=0)
 
-    day_of_year = times.dayofyear
-    temp_air = 10 + 10 * np.cos(2 * np.pi * (day_of_year - 182) / 365)
-    wind_speed = np.full_like(temp_air, 1.0)
+    wind_speed = np.full(len(times), 1.0)
 
     temp_params = temperature.TEMPERATURE_MODEL_PARAMETERS["sapm"]["open_rack_glass_polymer"]
     t_cell = temperature.sapm_cell(
-        poa_global, temp_air, wind_speed,
+        poa_global, temp_air_use, wind_speed,
         temp_params["a"], temp_params["b"], temp_params["deltaT"],
     )
 
@@ -132,7 +196,7 @@ def simulate_plant(plant_identifier, peak_power_wp, azimuth, tilt, latitude, lon
     monthly = daily.resample("ME").sum()
     monthly.index = monthly.index.strftime("%b")
 
-    return weekly, monthly, df, yearly_total_wh, clipped_wh
+    return weekly, monthly, df, yearly_total_wh, clipped_wh, tmy_failed
 
 
 # ===================== SIDEBAR =====================
@@ -149,6 +213,13 @@ with st.sidebar.expander("Umgebung & Modell", expanded=True):
         help="Beeinflusst ISO-Wochen-Layout (52 vs. 53 Wochen).",
         key="sim_year",
     )
+    use_tmy = st.checkbox(
+        "Reale Wetterdaten (PVGIS TMY) verwenden",
+        value=False,
+        key="use_tmy",
+    )
+    if use_tmy:
+        st.info("Reale Wetterdaten ber\u00fccksichtigen die durchschnittliche Bew\u00f6lkung der letzten 20 Jahre am gew\u00e4hlten Standort. Erfordert eine Internetverbindung.")
     transposition_model = st.selectbox(
         "Transpositionsmodell",
         options=["perez", "haydavies", "isotropic"],
@@ -159,7 +230,7 @@ with st.sidebar.expander("Umgebung & Modell", expanded=True):
     albedo_val = st.number_input(
         "Albedo (Bodenreflexion)",
         value=0.20, min_value=0.0, max_value=1.0, step=0.05,
-        help="0,20 = Gras/Asphalt. Höher bei Schnee (0,7) oder hellem Sand (0,4).",
+        help="0,20 = Gras/Asphalt. H\u00f6her bei Schnee (0,7) oder hellem Sand (0,4).",
         key="albedo",
     )
 
@@ -225,17 +296,18 @@ with st.sidebar.form("plant_form", clear_on_submit=False):
             value=edit_plant["tilt"] if edit_plant else 35,
             min_value=0, max_value=90, step=1,
         )
+    form_suffix = edit_plant["id"] if edit_plant else "new"
     lat = st.number_input(
         "Breitengrad",
         value=edit_plant["latitude"] if edit_plant else DEFAULT_LAT,
         min_value=-90.0, max_value=90.0, step=0.01,
-        key="plant_lat",
+        key=f"plant_lat_{form_suffix}",
     )
     lon = st.number_input(
         "L\u00e4ngengrad",
         value=edit_plant["longitude"] if edit_plant else DEFAULT_LON,
         min_value=-180.0, max_value=180.0, step=0.01,
-        key="plant_lon",
+        key=f"plant_lon_{form_suffix}",
     )
     inv_limit = st.number_input(
         "Wechselrichter-Limit (W) \u2014 0 = kein Limit",
@@ -408,7 +480,7 @@ with st.spinner("Berechne PV-Ertr\u00e4ge ..."):
     sim_errors = []
     for plant in selected_plants:
         try:
-            weekly, monthly, detail, yearly, clipped = simulate_plant(
+            weekly, monthly, detail, yearly, clipped, tmy_failed = simulate_plant(
                 plant["id"],
                 plant["peak_power_wp"],
                 plant["azimuth"],
@@ -422,12 +494,19 @@ with st.spinner("Berechne PV-Ertr\u00e4ge ..."):
                 albedo_val,
                 transposition_model,
                 eta_inv,
+                use_tmy,
             )
             results[plant["id"]] = weekly
             monthly_results[plant["id"]] = monthly
             detail_dfs[plant["id"]] = detail
             yearly_totals[plant["id"]] = yearly
             clipping_losses[plant["id"]] = clipped
+            if use_tmy and tmy_failed:
+                st.warning(
+                    f"PVGIS-Wetterdaten f\u00fcr '{plant['name']}' nicht verf\u00fcgbar "
+                    f"(Standort {plant['latitude']}/{plant['longitude']}). "
+                    f"Fallback auf Clear Sky."
+                )
         except Exception as e:
             sim_errors.append((plant["name"], str(e)))
             continue

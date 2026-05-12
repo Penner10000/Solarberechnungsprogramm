@@ -5,8 +5,8 @@
     "peak_power_wp": 900,
     "azimuth": 118,
     "tilt": 45,
-    "latitude": 51.16,
-    "longitude": 10.45,
+    "latitude": 51.60,
+    "longitude": 7.07,
     "inverter_limit_w": 800,
     "color": "#1f39b4"
   },
@@ -16,8 +16,8 @@
     "peak_power_wp": 1000,
     "azimuth": 157,
     "tilt": 90,
-    "latitude": 51.16,
-    "longitude": 10.45,
+    "latitude": 51.59,
+    "longitude": 7.05,
     "inverter_limit_w": 800,
     "color": "#b4241f"
   }
