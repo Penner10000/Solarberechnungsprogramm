@@ -99,6 +99,9 @@ def simulate_plant(plant_identifier, peak_power_wp, azimuth, tilt, latitude, lon
     airmass = atmosphere.get_relative_airmass(solpos["apparent_zenith"])
     dni_extra = irradiance.get_extra_radiation(times)
 
+    aoi = irradiance.aoi(tilt, azimuth, solpos["apparent_zenith"], solpos["azimuth"])
+    best_angle_hourly = 90.0 - aoi
+
     if use_tmy:
         tmy_data = fetch_tmy_data(latitude, longitude)
         if tmy_data is None:
@@ -176,6 +179,7 @@ def simulate_plant(plant_identifier, peak_power_wp, azimuth, tilt, latitude, lon
         "p_dc": p_dc.values,
         "p_ac": p_ac.values,
         "energy_wh": p_ac.values,
+        "best_angle": best_angle_hourly,
     })
     df.set_index("datetime", inplace=True)
 
@@ -193,10 +197,13 @@ def simulate_plant(plant_identifier, peak_power_wp, azimuth, tilt, latitude, lon
     weekly = weekly.reindex(range(1, int(df["week"].max()) + 1), fill_value=0.0)
     weekly.index.name = None
 
+    weekly_best_angle = df.groupby("week")["best_angle"].max()
+    weekly_best_angle = weekly_best_angle.reindex(range(1, int(df["week"].max()) + 1), fill_value=0.0)
+
     monthly = daily.resample("ME").sum()
     monthly.index = monthly.index.strftime("%b")
 
-    return weekly, monthly, df, yearly_total_wh, clipped_wh, tmy_failed
+    return weekly, monthly, df, yearly_total_wh, clipped_wh, tmy_failed, weekly_best_angle
 
 
 # ===================== SIDEBAR =====================
@@ -475,12 +482,13 @@ with st.spinner("Berechne PV-Ertr\u00e4ge ..."):
     results = {}
     monthly_results = {}
     detail_dfs = {}
+    best_angle_results = {}
     yearly_totals = {}
     clipping_losses = {}
     sim_errors = []
     for plant in selected_plants:
         try:
-            weekly, monthly, detail, yearly, clipped, tmy_failed = simulate_plant(
+            weekly, monthly, detail, yearly, clipped, tmy_failed, weekly_best_angle = simulate_plant(
                 plant["id"],
                 plant["peak_power_wp"],
                 plant["azimuth"],
@@ -501,6 +509,7 @@ with st.spinner("Berechne PV-Ertr\u00e4ge ..."):
             detail_dfs[plant["id"]] = detail
             yearly_totals[plant["id"]] = yearly
             clipping_losses[plant["id"]] = clipped
+            best_angle_results[plant["id"]] = weekly_best_angle
             if use_tmy and tmy_failed:
                 st.warning(
                     f"PVGIS-Wetterdaten f\u00fcr '{plant['name']}' nicht verf\u00fcgbar "
@@ -529,6 +538,10 @@ weekly_df = weekly_df.rename(columns=id_to_name)
 monthly_df = pd.DataFrame(monthly_results)
 monthly_df = monthly_df.rename(columns=id_to_name)
 
+best_angle_df = pd.DataFrame(best_angle_results)
+best_angle_df = best_angle_df.rename(columns=id_to_name)
+best_angle_df.index.name = "KW"
+
 st.markdown("### Diagramm-Einstellungen")
 col_ctl1, col_ctl2, col_ctl3, col_ctl4 = st.columns(4)
 
@@ -556,6 +569,12 @@ with col_ctl4:
         "Angezeigte Wochen",
         options=["Alle (1\u201352)", "Sommer (14\u201339)", "Winter (40\u201313)"],
     )
+
+show_best_angle = st.checkbox(
+    "Besten Einstrahlwinkel (\u00b0) anzeigen",
+    value=False,
+    help="Zeigt den Winkel an, in dem die Sonne am n\u00e4chsten senkrecht auf die Modulebene strahlt (90\u00b0 = optimal).",
+)
 
 display_df = weekly_df.copy()
 is_monthly = x_resolution == "Monate"
@@ -637,12 +656,89 @@ fig.update_layout(
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 )
 
+if show_best_angle and not is_monthly:
+    angle_display = best_angle_df.copy()
+    if display_weeks == "Sommer (14\u201339)":
+        angle_display = angle_display.loc[14:39]
+    elif display_weeks == "Winter (40\u201313)":
+        max_w = angle_display.index.max()
+        wks = list(range(40, max_w + 1)) + list(range(1, 14))
+        angle_display = angle_display.reindex([w for w in wks if w in angle_display.index])
+        ofs = max_w + 1
+        angle_display.index = pd.Index(
+            [w + ofs if w <= 13 else w for w in angle_display.index], name="KW",
+        )
+    fig.add_hline(y=90, line_dash="dash", line_color="gray", opacity=0.3)
+    for plant in selected_plants:
+        name = plant["name"]
+        c = plant.get("color")
+        if name not in angle_display.columns:
+            continue
+        fig.add_trace(go.Scatter(
+            x=angle_display.index, y=angle_display[name],
+            mode="lines", name=f"{name} (Winkel)",
+            line=dict(color=c, dash="dot", width=1),
+            yaxis="y2",
+            hovertemplate=f"{name}<br>Winkel: %{{y:.1f}}\u00b0<extra></extra>",
+        ))
+    fig.update_layout(
+        yaxis2=dict(
+            title="Einstrahlwinkel (\u00b0)",
+            overlaying="y",
+            side="right",
+            range=[0, 95],
+        ),
+    )
+
 if not is_monthly and display_weeks == "Winter (40\u201313)":
     tick_vals = list(display_df.index)
     tick_text = [str(v - offset if v >= offset else v) for v in tick_vals]
     fig.update_xaxes(tickvals=tick_vals, ticktext=tick_text)
 
 st.plotly_chart(fig, width="stretch", key="main_chart")
+
+# --- Best angle chart ---
+if show_best_angle and not is_monthly:
+    st.markdown("### Bester Einstrahlwinkel pro Woche")
+    angle_fig = go.Figure()
+    angle_display = best_angle_df.copy()
+    if display_weeks == "Sommer (14\u201339)":
+        angle_display = angle_display.loc[14:39]
+    elif display_weeks == "Winter (40\u201313)":
+        max_w = angle_display.index.max()
+        wks = list(range(40, max_w + 1)) + list(range(1, 14))
+        angle_display = angle_display.reindex([w for w in wks if w in angle_display.index])
+        ofs = max_w + 1
+        angle_display.index = pd.Index(
+            [w + ofs if w <= 13 else w for w in angle_display.index], name="KW",
+        )
+    angle_fig.add_hline(y=90, line_dash="dash", line_color="green", opacity=0.3)
+    for plant in selected_plants:
+        name = plant["name"]
+        c = plant.get("color")
+        if name not in angle_display.columns:
+            continue
+        angle_fig.add_trace(go.Scatter(
+            x=angle_display.index, y=angle_display[name],
+            mode="lines+markers", name=name,
+            line=dict(color=c), marker=dict(color=c),
+            hovertemplate=f"{name}<br>KW %{{x}}: %{{y:.1f}}\u00b0<extra></extra>",
+        ))
+    angle_fig.update_layout(
+        xaxis_title=x_label,
+        yaxis_title="Einstrahlwinkel (\u00b0)",
+        yaxis=dict(range=[0, 95]),
+        hovermode="x unified",
+        height=350,
+        margin=dict(l=20, r=20, t=10, b=20),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    if display_weeks == "Winter (40\u201313)":
+        angle_fig.update_xaxes(tickvals=list(angle_display.index),
+            ticktext=[str(v - ofs if v >= ofs else v) for v in angle_display.index])
+    st.plotly_chart(angle_fig, width="stretch", key="angle_chart")
 
 # --- Comparison table ---
 st.markdown("### Vergleichstabelle")
@@ -759,10 +855,31 @@ with st.expander("\U0001f4ca W\u00f6chentliche Rohdaten anzeigen", expanded=Fals
             for col in display_raw.columns
         },
     )
+
+    if not best_angle_df.empty:
+        st.caption("Bester Einstrahlwinkel pro Woche (\u00b0, 90\u00b0 = optimal)")
+        st.dataframe(
+            best_angle_df.style.format("{:.1f}"),
+            width="stretch",
+            column_config={
+                col: st.column_config.NumberColumn(f"{col} [\u00b0]", format="%.1f")
+                for col in best_angle_df.columns
+            },
+        )
+
     csv = display_raw.to_csv(float_format="%.1f")
     st.download_button(
-        label="\U0001f4e5 Daten als CSV herunterladen",
+        label="\U0001f4e5 Ertrag als CSV herunterladen",
         data=csv,
         file_name="pv_weekly_yield.csv",
         mime="text/csv",
     )
+
+    if not best_angle_df.empty:
+        angle_csv = best_angle_df.to_csv(float_format="%.1f")
+        st.download_button(
+            label="\U0001f4e5 Einstrahlwinkel als CSV herunterladen",
+            data=angle_csv,
+            file_name="pv_weekly_angle.csv",
+            mime="text/csv",
+        )
